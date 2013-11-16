@@ -1,0 +1,57 @@
+#!/usr/bin/python
+
+# CS 438 MP2
+# Uttaresh Mehta, mehta32
+
+# To initiate sender process:
+#       ./sender <filename> <receiver-domain-name> <receiver-port>
+
+import socket
+import sys
+from collections import namedtuple
+
+###TCP Segment Stuct###
+''' TCP Segment will be a list(C++ array) of length 6 where
+    indices represent:
+        0   Source Port
+        1   Destination Port
+        2   Segment Type
+        3   Ack number
+        4   Window Size
+        5   Data
+'''
+
+############Function Definitions##############
+
+def checkArgs(args):
+    # Correct number of args?
+    if (len(args)!=3):
+        return False
+    # Port is a number?
+    try:
+        int(args[2])
+    except:
+        print "Port must be an int!"
+        return False
+    return True
+
+def buildSYN(src,dest):
+    packet = [src, dest, "SYN", 0, 100, "0, hello"]
+    return packet
+
+# Main function
+if checkArgs(sys.argv[1:])==False:
+    print """Error! Incorrect args! Format:
+            ./sender <filename> <receiver-domain-name> <receiver-port>"""
+    sys.exit(1)     
+
+filepath = sys.argv[1]
+destname = sys.argv[2]    # The remote host
+destport = int(sys.argv[3])    # The same port as used by the server
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((destname, destport))
+
+srcport = s.getsockname()[1]
+s.send(str(buildSYN(srcport,destport)))
+s.close()
