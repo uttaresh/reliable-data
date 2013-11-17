@@ -4,6 +4,7 @@
  */
 import java.net.*;
 import java.io.*;
+import java.util.*;
 
 
 /**
@@ -11,59 +12,229 @@ import java.io.*;
  * 			mehta32@illinois.edu
  * 			uttareshm@gmail.com
  */
-public class sender implements Serializable {
-	private static final long serialVersionUID = -3322139518908278000L;
+public class sender {
+	
+	static DatagramSocket senderSocket = null;
 
-	static enum flag_t{
-		SYN, SYNACK, ACK
-	}
-	public class TCPPacket implements Serializable{
-		private static final long serialVersionUID = -6349365949955895950L;
-		public
-			int src_port;
-			int dest_port;
-			flag_t flag;
-			int seq_no;
-			int ack_no;
-			int window_size;
-			/*
-			 *  TODO : need "data" in here. not pointer... actual data.
-			 *  For now, let's make it the MSS as static, i.e. 100 bytes
-			 */
-			byte[] data = new byte[100];			
+	static byte[] filedata = null;
+	
+	/**
+	 * Function to read file into byte[] array
+	 */
+	public static byte[] readFile(File file) throws IOException {
+        // Open file
+        RandomAccessFile f = new RandomAccessFile(file, "r");
+        try {
+            // Get and check length
+            long longlength = f.length();
+            int length = (int) longlength;
+            if (length != longlength)
+                throw new IOException("File size >= 2 GB");
+            // Read file and return data
+            byte[] data = new byte[length];
+            f.readFully(data);
+            return data;
+        } finally {
+            f.close();
+        }
+    }
+	
+	/*
+	 * State machine handler
+	 */
+	public static enum senderStates_t{
+		SlowStart,
+		CongestionAvoidance,
+		FastRecovery
 	}
 	
-	private static byte[] objectToBytes(sender.TCPPacket tcp_packet){
-		ByteArrayOutputStream bos = new ByteArrayOutputStream();
-		ObjectOutput out = null;
-		byte[] packet_data = null;
-		try{
-			out = new ObjectOutputStream(bos);
-			out.writeObject(tcp_packet);
-			packet_data = bos.toByteArray();
-			out.close();
-			bos.close();
-		}catch (Exception e){
-			e.printStackTrace();
+	static float cwnd;
+	static int window_start;
+	static int window_end;
+	static float ssthresh;
+	
+	static int lastByteACKed;
+	static int lastByteSent;
+	static int dupACKcount;
+	
+	static int dest_port;
+	static InetAddress dest_address;
+	
+	// all times in milliseconds
+	static double DevRTT;
+	static double EstimatedRTT;
+	static long start_time;
+	static long end_time;
+	static long TimeoutInterval;
+	
+	static senderStates_t currentState;
+	
+	static enum event_t{
+		newACK,
+		dupACK,
+		timeout,
+		noEvent
+	}
+	
+	static int packet_size = 0;
+	
+	static int MSS=100;
+	static int receiverBuffer = 2500;
+	
+	/**
+	 *  Function to send one TCPSegment
+	 */
+	static void transmitSeg(TCPSegment.flag_t flag, byte[] data, int offset){
+		// Create packet from function parameters
+		DatagramPacket packet = null;
+		TCPSegment segment = new TCPSegment();
+		segment.flag = flag;
+		
+		if(flag == TCPSegment.flag_t.DATA){
+			segment.data = data;
+			segment.seq_no = offset;
 		}
-		return packet_data;
-	}
-	
-	private static sender.TCPPacket bytesToObject(byte[] data){
-		ByteArrayInputStream bis = new ByteArrayInputStream(data);
-		ObjectInput in = null;
-		Object o = null;
+		
+		byte[] packet_data = common.objectToBytes(segment);
+		packet = new DatagramPacket(packet_data,packet_data.length, dest_address, dest_port);
+		// Send packet over UDP
 		try {
-			in = new ObjectInputStream(bis);
-			 o = in.readObject(); 
-			bis.close();
-			in.close();
-		}catch (Exception e){
+			senderSocket.send(packet);
+		} catch (IOException e) {
+			// Could not send packet over UDP
 			e.printStackTrace();
+			System.exit(1);
 		}
-		return (TCPPacket) o;
 	}
 	
+	static void startStateMachine(){
+		EstimatedRTT = 1000;	// Estimated RTT is 1000ms by default
+		DevRTT = 0;
+		TimeoutInterval = (long)(EstimatedRTT + 4*DevRTT);
+		
+		dupACKcount = 0;
+		cwnd = MSS;
+		
+		window_start = 0;
+		window_end = (int)cwnd-1;		
+		
+		ssthresh = 1000;
+		lastByteSent = -1;
+		lastByteACKed = 0;
+		currentState = senderStates_t.SlowStart;
+		
+		// Send first segment and set timer
+		transmitSeg(TCPSegment.flag_t.DATA, Arrays.copyOfRange(filedata, 0, 99) ,0);
+		lastByteSent = 99;
+		start_time = System.currentTimeMillis();
+		end_time = start_time + TimeoutInterval;
+	}
+	
+	static event_t updateACKs(DatagramPacket packet){		
+		TCPSegment receivedACK = common.bytesToObject(packet.getData());
+		
+		if (receivedACK.ack_no == window_start){
+			return event_t.dupACK;
+		}else{
+			// Shift window
+			lastByteACKed = receivedACK.ack_no - 1;
+			window_start = receivedACK.ack_no;
+			
+			// Update timeout interval
+			double SampleRTT = System.currentTimeMillis()-start_time;
+			EstimatedRTT = 0.875*EstimatedRTT + 0.125*(SampleRTT);
+			DevRTT = 0.75*DevRTT + 0.25*Math.abs(SampleRTT - EstimatedRTT);
+			TimeoutInterval = (long)(EstimatedRTT + 4*DevRTT);
+			return event_t.newACK;
+		}
+		
+	}
+	
+	static void transmitNew(){		
+		window_start = lastByteACKed+1;	
+		window_end = Math.min(lastByteACKed+(int)cwnd, filedata.length-1);
+		// Send all packets in window that have not been sent
+		for (int i=lastByteSent+1;i<=window_end;i+=100){
+			if (lastByteSent-lastByteACKed <= cwnd){
+				transmitSeg(TCPSegment.flag_t.DATA, Arrays.copyOfRange(filedata, i, i+99), i);
+				lastByteSent = i+99;
+			}					
+		}	
+		// Start timer if not already running
+		if (end_time<=System.currentTimeMillis){
+			start_time = System.currentTimeMillis();
+			end_time = start_time + TimeoutInterval;
+		}
+			
+	}
+	
+	static void retransmit(){
+		transmitSeg(TCPSegment.flag_t.DATA, Arrays.copyOfRange(filedata, lastByteACKed+1, lastByteACKed+100), lastByteACKed+1);
+		start_time = System.currentTimeMillis();
+		end_time = start_time + TimeoutInterval;
+	}
+
+	
+	/**
+	 * Call this function after processing a packet. Will transition into
+	 * next state if necessary, making all state variable changes required.
+	 * 
+	 * Based on Figure 3.52 from Computer Networking, A Top Down Approach (6E)
+	 */
+	static void nextState(event_t event){
+		if (currentState == senderStates_t.SlowStart){
+			if (cwnd >= ssthresh){
+				currentState = senderStates_t.CongestionAvoidance;
+			}else if (dupACKcount == 3){
+				ssthresh=cwnd/2;
+				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
+				currentState = senderStates_t.FastRecovery;
+				retransmit();
+			}else if (event == event_t.dupACK)
+				dupACKcount++;
+			else if (event == event_t.newACK){
+				cwnd=Math.min(cwnd+MSS, receiverBuffer);
+				dupACKcount=0;
+				transmitNew();
+			}else if (event == event_t.timeout){
+				ssthresh=cwnd/2;
+				cwnd=MSS;
+				dupACKcount=0;
+				retransmit();
+			}
+		}else if (currentState == senderStates_t.CongestionAvoidance){
+			if (event == event_t.timeout){
+				ssthresh=cwnd/2;
+				cwnd=MSS;
+				dupACKcount=0;
+				currentState = senderStates_t.SlowStart;
+				retransmit();
+			}else if (dupACKcount==3){
+				ssthresh=cwnd/2;
+				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
+				currentState = senderStates_t.FastRecovery;
+				retransmit();
+			}else if (event == event_t.newACK){
+				cwnd=Math.min(cwnd+MSS*(MSS/cwnd), receiverBuffer);
+				dupACKcount=0;
+				transmitNew();
+			}else if (event == event_t.dupACK) dupACKcount++;
+		}else if (currentState == senderStates_t.FastRecovery){
+			if (event == event_t.newACK){
+				cwnd=ssthresh;
+				dupACKcount=0;
+				currentState = senderStates_t.CongestionAvoidance;
+			}else if (dupACKcount == 3){
+				ssthresh=cwnd/2;
+				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
+				currentState = senderStates_t.SlowStart;
+				retransmit();
+			}else if(event == event_t.dupACK){
+				cwnd=Math.min(cwnd+MSS, receiverBuffer);
+				transmitNew();
+			}
+		}		
+	}
 	
 	/**
 	 * To compile the sender, use the following command:
@@ -71,7 +242,7 @@ public class sender implements Serializable {
 	 * 
 	 * To start sender process, use the following command:
 	 * java sender <filename> <receiver-domain-name> <receiver-port>
-	 * @param args
+	 * @param args	command line arguments from terminal
 	 */
 	public static void main(String[] args) {
 		
@@ -83,9 +254,8 @@ public class sender implements Serializable {
 			System.out.println("java sender <filename> <receiver-domain-name> <receiver-port>");
 			System.exit(1);
 		}
-		int port = 0;
 		try{
-			port = Integer.parseInt(args[2]);			
+			dest_port = Integer.parseInt(args[2]);			
 		}catch(NumberFormatException e){
 			System.out.println("Error. Receiver port must be int!");
 			System.out.println("java sender <filename> <receiver-domain-name> <receiver-port>");
@@ -93,82 +263,67 @@ public class sender implements Serializable {
 		}
 		File f = new File(args[0]);
 		if (!f.exists()){
-			System.out.println("Error. File does not exist!");
+			System.out.println("Error. File " + args[0] + " does not exist!");
 			System.exit(1);
 		}
+		try {
+			filedata = readFile(f);
+		} catch (IOException e1) {
+			System.out.println("Error. Could not read file.");
+			System.exit(1);
+		}
+		try {
+			dest_address = InetAddress.getByName(args[1]);
+		} catch (UnknownHostException e1) {
+			e1.printStackTrace();
+		}
+		// What's the size of one packet, including header and data?
+		packet_size = common.SerializedPacketSize();
+		
 		
 		/*
 		 * Establish UDP socket
 		 */
-		DatagramSocket UDPConnection = null;
 		try {
-			UDPConnection = new DatagramSocket();
+			senderSocket = new DatagramSocket(18808);
 		} catch (SocketException e) {
 			System.out.println("Error. Could not create UDP connection");
 			System.exit(1);
 		}
-		
+
+			
+		/*
+		 * Start state machine, send first packet
+		 */
+		startStateMachine();
 		
 		/*
-		 * Send SYN and wait for SYN ACK
+		 * State machine loop
 		 */
-		boolean syn_acked = false;
-		while(!syn_acked){
-			sender senderInstance = new sender();
-			sender.TCPPacket syn = senderInstance.new TCPPacket();
-	
-			syn.dest_port = port;
-			syn.flag = flag_t.SYN;
-			byte[] packet_data = sender.objectToBytes(syn);
-			byte[] recv_buff = new byte[packet_data.length];
+		boolean loopForever = true;
+		while(loopForever){
+			// TODO set timeout for all ACKs in window
 			
-			DatagramPacket packet = null;
-			DatagramPacket received = null;
-			try{
-				packet = new DatagramPacket(packet_data,packet_data.length, InetAddress.getByName(args[1]), port);
-				received = new DatagramPacket(recv_buff, recv_buff.length);
-			}catch(UnknownHostException e){
-				
-				// Could not recognize host		
-				e.printStackTrace();
-				System.exit(1);
-			}
+			
+			byte[] ack_data = new byte[packet_size];
+			DatagramPacket ack_packet = new DatagramPacket(ack_data, packet_size);
+			
+			event_t this_event;
 			try {
-				UDPConnection.send(packet);
-			} catch (IOException e) {
-				// Could not send packet over UDP
-				e.printStackTrace();
-				System.exit(1);
-			}
-			
-			// Wait for SYN ACK until timeout
-			// TODO Can we send/receive in the same UDP socket??
-			boolean socketTimeout = false;
-			try {
-				UDPConnection.setSoTimeout(1000);	// What's the timeout time/mechanism?
-				UDPConnection.receive(received);
-			
-			} catch (SocketTimeoutException e){
-				syn_acked = false;
-				socketTimeout = true;
+				senderSocket.receive(ack_packet);				
+				this_event = UpdateACKs(ack_packet);
 				
-			} catch (SocketException e) {
-				// TODO Auto-generated catch block
+			}catch (IOException e) {
 				e.printStackTrace();
-			}catch (IOException e){
-				e.printStackTrace();
-			}finally{
-				// convert datagram bytes[] to TCPPacket and check if SYN ACK
-				if (socketTimeout == false){
-					sender.TCPPacket received_packet = bytesToObject(received.getData());
-					if (received_packet.flag == flag_t.SYNACK) syn_acked = true;	
-				}
 			}
+			
+			if (all_received)
+				loopForever = false;
+			
+			nextState(this_event);
+			
 		}
 		
-		/*
-		 * Start sending packets. Wait for ACK
-		 */
 		
 		/*
 		 * Upon receiving ACK, decrement unacked count. If total_size_successfully_sent>=total_data_size, end transmission
@@ -182,7 +337,7 @@ public class sender implements Serializable {
 		/*
 		 * Terminate UDP connection
 		 */
-		UDPConnection.close();
+		senderSocket.close();
 		
 	}
 
