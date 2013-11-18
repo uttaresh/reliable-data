@@ -35,6 +35,14 @@ public class common {
 			 o = in.readObject(); 
 			bis.close();
 			in.close();
+		}catch(EOFException e){
+			// Damn EOFs...
+			try {
+				bis.close();
+				in.close();
+			} catch (IOException e1) {
+				e1.printStackTrace();
+			}
 		}catch (Exception e){
 			e.printStackTrace();
 		}

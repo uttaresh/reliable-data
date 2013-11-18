@@ -9,13 +9,18 @@ import java.io.Serializable;
  * @author Uttaresh
  *
  */
-public class TCPSegment implements Serializable{
+public class TCPSegment implements Serializable, Comparable<TCPSegment> {
 	private static final long serialVersionUID = -6349365949955895950L;
-	public static enum flag_t{
-		DATA, DATAACK, FIN, FINACK
+
+	@Override
+	public int compareTo(TCPSegment anotherSegment) {
+	    if (this.seq_no<anotherSegment.seq_no) return -1;
+	    else if (this.seq_no==anotherSegment.seq_no) return 0;
+	    else return 1;
 	}
+	
 	public
-		flag_t flag;
+		int flag;
 		int seq_no;
 		int ack_no;
 		/*

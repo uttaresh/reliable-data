@@ -6,7 +6,6 @@ import java.net.*;
 import java.io.*;
 import java.util.*;
 
-
 /**
  * @author 	Uttaresh
  * 			mehta32@illinois.edu
@@ -16,6 +15,14 @@ public class sender {
 	
 	static DatagramSocket senderSocket = null;
 
+	
+	//Flags:
+	static int DATA = 1;
+	static int DATAACK = 2;
+	static int FIN = 3;
+	static int FINACK = 4;	
+	
+	
 	static byte[] filedata = null;
 	
 	/**
@@ -84,13 +91,13 @@ public class sender {
 	/**
 	 *  Function to send one TCPSegment
 	 */
-	static void transmitSeg(TCPSegment.flag_t flag, byte[] data, int offset){
+	static void transmitSeg(int flag, byte[] data, int offset){
 		// Create packet from function parameters
 		DatagramPacket packet = null;
 		TCPSegment segment = new TCPSegment();
 		segment.flag = flag;
 		
-		if(flag == TCPSegment.flag_t.DATA){
+		if(flag == DATA){
 			segment.data = data;
 			segment.seq_no = offset;
 		}
@@ -120,19 +127,18 @@ public class sender {
 		
 		ssthresh = 1000;
 		lastByteSent = -1;
-		lastByteACKed = 0;
+		lastByteACKed = -1;
 		currentState = senderStates_t.SlowStart;
 		
 		// Send first segment and set timer
-		transmitSeg(TCPSegment.flag_t.DATA, Arrays.copyOfRange(filedata, 0, 99) ,0);
+		transmitSeg(DATA, Arrays.copyOfRange(filedata, 0, 100) ,0);
 		lastByteSent = 99;
 		start_time = System.currentTimeMillis();
 		end_time = start_time + TimeoutInterval;
 	}
 	
-	static event_t updateACKs(DatagramPacket packet){		
-		TCPSegment receivedACK = common.bytesToObject(packet.getData());
-		
+	static event_t updateACKs(TCPSegment receivedACK){		
+
 		if (receivedACK.ack_no == window_start){
 			return event_t.dupACK;
 		}else{
@@ -152,16 +158,16 @@ public class sender {
 	
 	static void transmitNew(){		
 		window_start = lastByteACKed+1;	
-		window_end = Math.min(lastByteACKed+(int)cwnd, filedata.length-1);
+		window_end = Math.min(lastByteACKed+(int)Math.ceil(cwnd), filedata.length-1);
 		// Send all packets in window that have not been sent
 		for (int i=lastByteSent+1;i<=window_end;i+=100){
 			if (lastByteSent-lastByteACKed <= cwnd){
-				transmitSeg(TCPSegment.flag_t.DATA, Arrays.copyOfRange(filedata, i, i+99), i);
+				transmitSeg(DATA, Arrays.copyOfRange(filedata, i, i+100), i);
 				lastByteSent = i+99;
 			}					
 		}	
 		// Start timer if not already running
-		if (end_time<=System.currentTimeMillis){
+		if (end_time<=System.currentTimeMillis()){
 			start_time = System.currentTimeMillis();
 			end_time = start_time + TimeoutInterval;
 		}
@@ -169,7 +175,7 @@ public class sender {
 	}
 	
 	static void retransmit(){
-		transmitSeg(TCPSegment.flag_t.DATA, Arrays.copyOfRange(filedata, lastByteACKed+1, lastByteACKed+100), lastByteACKed+1);
+		transmitSeg(DATA, Arrays.copyOfRange(filedata, lastByteACKed+1, lastByteACKed+100), lastByteACKed+1);
 		start_time = System.currentTimeMillis();
 		end_time = start_time + TimeoutInterval;
 	}
@@ -302,43 +308,121 @@ public class sender {
 		 */
 		boolean loopForever = true;
 		while(loopForever){
-			// TODO set timeout for all ACKs in window
-			
+			// must receive an ACK by end of timer
+			try {
+				senderSocket.setSoTimeout((int)(end_time - System.currentTimeMillis()));
+			} catch (SocketException e1) {
+				System.out.println("Error. Could not set socket timeout");
+				e1.printStackTrace();
+			}
 			
 			byte[] ack_data = new byte[packet_size];
 			DatagramPacket ack_packet = new DatagramPacket(ack_data, packet_size);
 			
-			event_t this_event;
+			event_t this_event = event_t.noEvent;
 			try {
-				senderSocket.receive(ack_packet);				
-				this_event = UpdateACKs(ack_packet);
+				senderSocket.receive(ack_packet);
 				
+				TCPSegment receivedACK = common.bytesToObject(ack_data);
+				
+				System.out.println("ACK received: " + receivedACK.ack_no);
+				this_event = updateACKs(receivedACK);
+			}catch (SocketTimeoutException e){
+				// Timeout!
+				this_event = event_t.timeout;
 			}catch (IOException e) {
+				e.printStackTrace();
+			}finally{
+				if (lastByteACKed >= filedata.length){
+					// All file data sent? Exit loop
+					loopForever = false;
+				}else
+					nextState(this_event);
+			}
+		}
+		/*
+		 * Send FIN, with size of last packet
+		 */
+		int lastLength=MSS;
+		if (filedata.length%MSS != 0) lastLength = filedata.length%MSS;
+		
+		// Everything has been sent. Keep sending FINs until FINACK received
+		loopForever = true;
+		while(loopForever){
+			transmitSeg(FIN, null, lastLength);
+			try {
+				senderSocket.setSoTimeout((int)TimeoutInterval);
+			} catch (SocketException e) {
+				System.out.println("Error. Could not set socket timeout");
 				e.printStackTrace();
 			}
 			
-			if (all_received)
-				loopForever = false;
+			byte[] finack_data = new byte[packet_size];
+			DatagramPacket finack_packet = new DatagramPacket(finack_data, packet_size);
 			
-			nextState(this_event);
-			
+			try {
+				senderSocket.receive(finack_packet);
+				if (common.bytesToObject(finack_data).flag == FINACK)
+					loopForever = false;
+				
+			}catch(SocketTimeoutException e){
+				continue;
+			}catch (IOException e) {
+				e.printStackTrace();
+			}
 		}
 		
-		
+		byte[] temp_data = new byte[packet_size];
+		DatagramPacket temp = new DatagramPacket(temp_data, packet_size);
+
 		/*
-		 * Upon receiving ACK, decrement unacked count. If total_size_successfully_sent>=total_data_size, end transmission
-		 * Otherwise, loop to sending packets
+		 * Get FIN from server
 		 */
+		try {
+			senderSocket.setSoTimeout((int)TimeoutInterval);
+		} catch (SocketException e) {
+			System.out.println("Error. Could not set socket timeout");
+			e.printStackTrace();
+		}
+		loopForever = true;
+		while (loopForever){
+			try {
+				senderSocket.receive(temp);
+				if (common.bytesToObject(temp_data).flag==FIN){
+					// Send FINACK to server
+					transmitSeg(FINACK, null, 0);
+					loopForever = false;
+				}
+			}catch(SocketTimeoutException e){
+				transmitSeg(DATAACK, null, 0);
+			}catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
 		
-		/*
-		 * Once all packets sent, terminate session
-		 */
-		
-		/*
-		 * Terminate UDP connection
-		 */
-		senderSocket.close();
-		
+		/* Close connection after 10seconds. If any more FINs received, FINACK was not acked, resend! */
+		try {
+			senderSocket.setSoTimeout(10000);
+		} catch (SocketException e) {
+			System.out.println("Error. Could not set socket timeout");
+			e.printStackTrace();
+		}
+		loopForever = true;
+		while (loopForever){
+			try {
+				senderSocket.receive(temp);
+				if (common.bytesToObject(temp_data).flag==FIN){
+					// Send FINACK to server
+					transmitSeg(FINACK, null, 0);
+					continue;
+				}
+			}catch(SocketTimeoutException e){
+				loopForever = false;;
+			}catch (IOException e) {
+				e.printStackTrace();
+			}
+		}		
+		senderSocket.close();		
 	}
 
 }
