@@ -61,16 +61,16 @@ public class receiver {
 	 * javac receiver
 	 * 
 	 * To start receiver process, use the following command:
-	 * java receiver <receiver-port>
+	 * java receiver <receiver-port> <loss-pattern>
 	 * @param args
 	 */
 	public static void main(String[] args) {
 		/*
 		 * Verify command line args
 		 */
-		if (args.length != 1){
+		if (args.length != 2){
 			System.out.println("Error. Incorrect syntax.");
-			System.out.println("java receiver <receiver-port>");
+			System.out.println("java receiver <receiver-port> <loss-pattern>");
 			System.exit(1);
 		}
 		int port = 0;		
@@ -78,10 +78,72 @@ public class receiver {
 			port = Integer.parseInt(args[0]);			
 		}catch(NumberFormatException e){
 			System.out.println("Error. Receiver port must be int!");
-			System.out.println("java receiver <receiver-port>");
+			System.out.println("java receiver <receiver-port> <loss-pattern>");
 			System.exit(1);			
 		}
+		if (new File(args[1]).exists()==false){
+			System.out.println("Error. Could not find loss file.");
+			System.exit(1);
+		}
+		
 		packet_size = common.SerializedPacketSize();
+		
+		/* Get required loss pattern from file */
+		byte[] lossdata=null;
+		try{
+			RandomAccessFile lossfile = new RandomAccessFile(args[1],"r");
+			lossdata = new byte[(int)lossfile.length()];
+			lossfile.readFully(lossdata);
+			lossfile.close();
+		}catch(Exception e){
+			e.printStackTrace();
+		}
+		String loss_text = new String(lossdata);
+		
+		// No packets received initially
+		long RSN=0;
+		
+		int temp_num = 0;
+		// Read in first number to determine loss method
+		int loss_method=0;
+		int i;
+		for (i=0; i<loss_text.length(); i++){
+			if (loss_text.charAt(i) >= '0' && loss_text.charAt(i) <= '9'){
+				loss_method = loss_text.charAt(i) - '0';
+				break;
+			}
+		}
+		
+		// Drop every few packets
+		int drop_every=0;
+		if (loss_method == 1){
+			for (i=i+1;i<loss_text.length(); i++){
+				if (loss_text.charAt(i)>='0'&&loss_text.charAt(i)<='9'){
+					temp_num = temp_num*10+(loss_text.charAt(i)-'0');
+				}else{
+					if (temp_num!=0){
+						drop_every = temp_num;
+						break;
+					}
+				}
+			}			
+		}
+		
+		// Create predetermined queue of packets to drop
+		PriorityQueue<Integer> drop_queue=null;
+		if (loss_method == 2){
+			drop_queue = new PriorityQueue<Integer>();
+			for (i=i+1; i<loss_text.length(); i++){
+				if (loss_text.charAt(i)>='0'&&loss_text.charAt(i)<='9'){
+					temp_num = temp_num*10+(loss_text.charAt(i)-'0');
+				}else{
+					if (temp_num!=0){
+						drop_queue.add(new Integer(temp_num));
+						temp_num = 0;
+					}
+				}
+			}
+		}
 		
 		/*
 		 * Open UDP listening socket
@@ -113,6 +175,17 @@ public class receiver {
 			DatagramPacket packet = new DatagramPacket(packet_data, packet_size);
 			try {
 				receiverSocket.receive(packet);
+				RSN++;
+				if (RSN==1) System.out.print("Receiving file..");
+				else System.out.print(".");
+				if (loss_method == 1 && (RSN%drop_every==1)) continue;
+				if (loss_method == 2 && (drop_queue.peek()!=null)){
+					if (drop_queue.peek().intValue()==RSN){
+						int tmp = drop_queue.poll().intValue();
+						continue;
+					}	
+				}
+				
 				senderAddress = packet.getAddress();
 				senderPort = packet.getPort();
 				
@@ -133,13 +206,13 @@ public class receiver {
 				if (this_seg.seq_no==firstUnACKed){
 					TCPSegment temp;
 					while( (temp = packet_queue.peek()) != null ){
-						if (temp.seq_no==firstUnACKed){			
+						if (temp.seq_no<=firstUnACKed){			
 							int size;
 							// Don't write trailing NULs
 							for (size=MSS;temp.data[size-1]==0&&size>0;size--);
 							f.write(packet_queue.poll().data, 0, size);						
 							firstUnACKed += MSS;
-						}
+						}else break;
 					}
 				}
 				transmitSeg(DATAACK, firstUnACKed);
@@ -222,6 +295,7 @@ public class receiver {
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
+		System.out.println("\nFile successfully received. File contents:\n");
 		System.out.println(new String(filedata));
 	}
 

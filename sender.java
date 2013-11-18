@@ -107,6 +107,7 @@ public class sender {
 		// Send packet over UDP
 		try {
 			senderSocket.send(packet);
+			System.out.print(".");
 		} catch (IOException e) {
 			// Could not send packet over UDP
 			e.printStackTrace();
@@ -135,6 +136,7 @@ public class sender {
 		lastByteSent = 99;
 		start_time = System.currentTimeMillis();
 		end_time = start_time + TimeoutInterval;
+		System.out.print("Sending file..");
 	}
 	
 	static event_t updateACKs(TCPSegment receivedACK){		
@@ -175,7 +177,7 @@ public class sender {
 	}
 	
 	static void retransmit(){
-		transmitSeg(DATA, Arrays.copyOfRange(filedata, lastByteACKed+1, lastByteACKed+100), lastByteACKed+1);
+		transmitSeg(DATA, Arrays.copyOfRange(filedata, lastByteACKed+1, lastByteACKed+101), lastByteACKed+1);
 		start_time = System.currentTimeMillis();
 		end_time = start_time + TimeoutInterval;
 	}
@@ -189,54 +191,56 @@ public class sender {
 	 */
 	static void nextState(event_t event){
 		if (currentState == senderStates_t.SlowStart){
-			if (cwnd >= ssthresh){
-				currentState = senderStates_t.CongestionAvoidance;
-			}else if (dupACKcount == 3){
+			if (event == event_t.dupACK) dupACKcount++;	
+			if (dupACKcount >= 3){
 				ssthresh=cwnd/2;
 				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
 				currentState = senderStates_t.FastRecovery;
 				retransmit();
-			}else if (event == event_t.dupACK)
-				dupACKcount++;
-			else if (event == event_t.newACK){
-				cwnd=Math.min(cwnd+MSS, receiverBuffer);
-				dupACKcount=0;
-				transmitNew();
+			}else if (cwnd >= ssthresh){
+				currentState = senderStates_t.CongestionAvoidance;
 			}else if (event == event_t.timeout){
 				ssthresh=cwnd/2;
 				cwnd=MSS;
 				dupACKcount=0;
 				retransmit();
+			}else if (event == event_t.newACK){
+				cwnd=Math.min(cwnd+MSS, receiverBuffer);
+				dupACKcount=0;
+				transmitNew();
 			}
-		}else if (currentState == senderStates_t.CongestionAvoidance){
+		}else if (currentState == senderStates_t.FastRecovery){
 			if (event == event_t.timeout){
+				ssthresh=cwnd/2;
+				cwnd=1;
+				dupACKcount=0;
+				currentState = senderStates_t.SlowStart;
+				retransmit();
+			}if(event == event_t.dupACK){
+				cwnd=Math.min(cwnd+MSS, receiverBuffer);
+				transmitNew();
+			}else if (event == event_t.newACK){
+				cwnd=ssthresh;
+				dupACKcount=0;
+				currentState = senderStates_t.CongestionAvoidance;
+			}
+		}
+		if (currentState == senderStates_t.CongestionAvoidance){
+			if (event == event_t.dupACK) dupACKcount++;
+			if (dupACKcount>=3){
+				ssthresh=cwnd/2;
+				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
+				currentState = senderStates_t.FastRecovery;
+				retransmit();
+			}else if (event == event_t.timeout){
 				ssthresh=cwnd/2;
 				cwnd=MSS;
 				dupACKcount=0;
 				currentState = senderStates_t.SlowStart;
 				retransmit();
-			}else if (dupACKcount==3){
-				ssthresh=cwnd/2;
-				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
-				currentState = senderStates_t.FastRecovery;
-				retransmit();
 			}else if (event == event_t.newACK){
 				cwnd=Math.min(cwnd+MSS*(MSS/cwnd), receiverBuffer);
 				dupACKcount=0;
-				transmitNew();
-			}else if (event == event_t.dupACK) dupACKcount++;
-		}else if (currentState == senderStates_t.FastRecovery){
-			if (event == event_t.newACK){
-				cwnd=ssthresh;
-				dupACKcount=0;
-				currentState = senderStates_t.CongestionAvoidance;
-			}else if (dupACKcount == 3){
-				ssthresh=cwnd/2;
-				cwnd=Math.min(ssthresh+3*MSS, receiverBuffer);
-				currentState = senderStates_t.SlowStart;
-				retransmit();
-			}else if(event == event_t.dupACK){
-				cwnd=Math.min(cwnd+MSS, receiverBuffer);
 				transmitNew();
 			}
 		}		
@@ -331,7 +335,6 @@ public class sender {
 					
 					TCPSegment receivedACK = common.bytesToObject(ack_data);
 					
-					System.out.println("ACK received: " + receivedACK.ack_no);
 					this_event = updateACKs(receivedACK);
 				}
 			}catch (SocketTimeoutException e){
@@ -395,9 +398,9 @@ public class sender {
 			}catch (IOException e) {
 				e.printStackTrace();
 			}
-		}
-		
+		}		
 		senderSocket.close();		
+		System.out.println("\nFile successfully sent.");
 	}
 
 }
