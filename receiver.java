@@ -135,6 +135,7 @@ public class receiver {
 					while( (temp = packet_queue.peek()) != null ){
 						if (temp.seq_no==firstUnACKed){			
 							int size;
+							// Don't write trailing NULs
 							for (size=MSS;temp.data[size-1]==0&&size>0;size--);
 							f.write(packet_queue.poll().data, 0, size);						
 							firstUnACKed += MSS;
@@ -150,22 +151,78 @@ public class receiver {
 		}
 		
 		/*
-		 * Broke out of loop. Must have received FIN. Close file and start session termination
-		 */		
+		 * Send FINACK for every FIN received.
+		 */
+		transmitSeg(FINACK, 0);
+		loopForever = true;
+		byte[] temp_data = new byte[packet_size];
+		DatagramPacket temp = new DatagramPacket(temp_data, packet_size);
+		try {
+			receiverSocket.setSoTimeout(2000);	// Wait for 2 seconds. Enough time for our purposes
+		} catch (SocketException e1) {
+			e1.printStackTrace();
+		}
+		while (loopForever){
+			try {
+				receiverSocket.receive(temp);
+				if (common.bytesToObject(temp_data).flag==FIN){
+					// Send FINACK to server
+					transmitSeg(FINACK, 0);
+					loopForever = false;
+				}
+			}catch(SocketTimeoutException e){
+				break;
+			}catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+		
+		/*
+		 * Send FIN until FINACK received
+		 */
+		loopForever = true;
+		while(loopForever){
+			transmitSeg(FIN, 0);
+			try {
+				receiverSocket.setSoTimeout(500);	// Are we supposed to keep a timeout calculation
+			} catch (SocketException e) {			// JUST for this? Seems wasteful
+				System.out.println("Error. Could not set socket timeout");
+				e.printStackTrace();
+			}
+			try {
+				receiverSocket.receive(temp);
+				if (common.bytesToObject(temp_data).flag == FINACK)
+					loopForever = false;				
+			}catch(SocketTimeoutException e){
+				continue;
+			}catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+		
+		/*
+		 * Close connection
+		 */
+		receiverSocket.close();
+		
+		/*
+		 * Print to screen and close file
+		 */
 		try {
 			f.close();
 		} catch (IOException e) {
 			e.printStackTrace();
+		}	
+		byte[] filedata=null;
+		try {
+			RandomAccessFile fin = new RandomAccessFile("output.txt", "r");
+			filedata = new byte[(int)fin.length()];
+			fin.readFully(filedata);
+			fin.close();
+		} catch (Exception e) {
+			e.printStackTrace();
 		}
-		
-		
-		
-		
-		
-		
-		receiverSocket.close();
-		
-		
+		System.out.println(new String(filedata));
 	}
 
 }

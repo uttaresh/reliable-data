@@ -309,8 +309,14 @@ public class sender {
 		boolean loopForever = true;
 		while(loopForever){
 			// must receive an ACK by end of timer
+			long current_time = System.currentTimeMillis();
+			event_t this_event = event_t.noEvent;
 			try {
-				senderSocket.setSoTimeout((int)(end_time - System.currentTimeMillis()));
+				if (end_time - current_time >= 0){
+					senderSocket.setSoTimeout((int)(end_time - current_time));
+				}else
+					this_event = event_t.timeout;
+					
 			} catch (SocketException e1) {
 				System.out.println("Error. Could not set socket timeout");
 				e1.printStackTrace();
@@ -319,14 +325,15 @@ public class sender {
 			byte[] ack_data = new byte[packet_size];
 			DatagramPacket ack_packet = new DatagramPacket(ack_data, packet_size);
 			
-			event_t this_event = event_t.noEvent;
 			try {
-				senderSocket.receive(ack_packet);
-				
-				TCPSegment receivedACK = common.bytesToObject(ack_data);
-				
-				System.out.println("ACK received: " + receivedACK.ack_no);
-				this_event = updateACKs(receivedACK);
+				if (this_event != event_t.timeout){
+					senderSocket.receive(ack_packet);
+					
+					TCPSegment receivedACK = common.bytesToObject(ack_data);
+					
+					System.out.println("ACK received: " + receivedACK.ack_no);
+					this_event = updateACKs(receivedACK);
+				}
 			}catch (SocketTimeoutException e){
 				// Timeout!
 				this_event = event_t.timeout;
@@ -335,21 +342,19 @@ public class sender {
 			}finally{
 				if (lastByteACKed >= filedata.length){
 					// All file data sent? Exit loop
-					loopForever = false;
+					break;
 				}else
 					nextState(this_event);
 			}
 		}
 		/*
-		 * Send FIN, with size of last packet
-		 */
-		int lastLength=MSS;
-		if (filedata.length%MSS != 0) lastLength = filedata.length%MSS;
-		
-		// Everything has been sent. Keep sending FINs until FINACK received
+		 * Keep sending FINs until FINACK received
+		 */		
+		byte[] temp_data = new byte[packet_size];
+		DatagramPacket temp = new DatagramPacket(temp_data, packet_size);
 		loopForever = true;
 		while(loopForever){
-			transmitSeg(FIN, null, lastLength);
+			transmitSeg(FIN, null, 0);
 			try {
 				senderSocket.setSoTimeout((int)TimeoutInterval);
 			} catch (SocketException e) {
@@ -357,50 +362,20 @@ public class sender {
 				e.printStackTrace();
 			}
 			
-			byte[] finack_data = new byte[packet_size];
-			DatagramPacket finack_packet = new DatagramPacket(finack_data, packet_size);
-			
 			try {
-				senderSocket.receive(finack_packet);
-				if (common.bytesToObject(finack_data).flag == FINACK)
-					loopForever = false;
-				
+				senderSocket.receive(temp);
+				if (common.bytesToObject(temp_data).flag == FINACK)
+					loopForever = false;				
 			}catch(SocketTimeoutException e){
 				continue;
 			}catch (IOException e) {
 				e.printStackTrace();
 			}
 		}
-		
-		byte[] temp_data = new byte[packet_size];
-		DatagramPacket temp = new DatagramPacket(temp_data, packet_size);
 
 		/*
-		 * Get FIN from server
+		 * For every FIN from server, send FINACK
 		 */
-		try {
-			senderSocket.setSoTimeout((int)TimeoutInterval);
-		} catch (SocketException e) {
-			System.out.println("Error. Could not set socket timeout");
-			e.printStackTrace();
-		}
-		loopForever = true;
-		while (loopForever){
-			try {
-				senderSocket.receive(temp);
-				if (common.bytesToObject(temp_data).flag==FIN){
-					// Send FINACK to server
-					transmitSeg(FINACK, null, 0);
-					loopForever = false;
-				}
-			}catch(SocketTimeoutException e){
-				transmitSeg(DATAACK, null, 0);
-			}catch (IOException e) {
-				e.printStackTrace();
-			}
-		}
-		
-		/* Close connection after 10seconds. If any more FINs received, FINACK was not acked, resend! */
 		try {
 			senderSocket.setSoTimeout(10000);
 		} catch (SocketException e) {
@@ -414,14 +389,14 @@ public class sender {
 				if (common.bytesToObject(temp_data).flag==FIN){
 					// Send FINACK to server
 					transmitSeg(FINACK, null, 0);
-					continue;
+					loopForever = false;
 				}
 			}catch(SocketTimeoutException e){
-				loopForever = false;;
 			}catch (IOException e) {
 				e.printStackTrace();
 			}
-		}		
+		}
+		
 		senderSocket.close();		
 	}
 
