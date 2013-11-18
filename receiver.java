@@ -177,11 +177,11 @@ public class receiver {
 				receiverSocket.receive(packet);
 				RSN++;
 				if (RSN==1) System.out.print("Receiving file..");
-				else System.out.print(".");
+				//else System.out.print(".");
 				if (loss_method == 1 && (RSN%drop_every==1)) continue;
 				if (loss_method == 2 && (drop_queue.peek()!=null)){
 					if (drop_queue.peek().intValue()==RSN){
-						int tmp = drop_queue.poll().intValue();
+						drop_queue.poll().intValue();
 						continue;
 					}	
 				}
@@ -190,6 +190,7 @@ public class receiver {
 				senderPort = packet.getPort();
 				
 				TCPSegment this_seg = common.bytesToObject(packet_data);
+			//System.out.println("Seq received: " + this_seg.seq_no + " wanted: " + firstUnACKed);
 				
 				if (this_seg.flag == FIN) break;
 				
