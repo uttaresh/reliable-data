@@ -6,10 +6,15 @@ import java.io.*;
  */
 
 /**
- * @author Uttaresh
+ * @author  Uttaresh
+ * 			uttareshm@gmail.com
  *
  */
 public class common {
+	
+	/* Reference: 
+	 * http://stackoverflow.com/questions/2836646/java-serializable-object-to-byte-array
+	 */
 	public static byte[] objectToBytes(TCPSegment tcp_packet){
 		ByteArrayOutputStream bos = new ByteArrayOutputStream();
 		ObjectOutput out = null;
@@ -26,6 +31,9 @@ public class common {
 		return packet_data;
 	}
 	
+	/* Reference:
+	 * http://stackoverflow.com/questions/2836646/java-serializable-object-to-byte-array
+	 */
 	public static TCPSegment bytesToObject(byte[] data){
 		ByteArrayInputStream bis = new ByteArrayInputStream(data);
 		ObjectInput in = null;

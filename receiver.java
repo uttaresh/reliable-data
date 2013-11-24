@@ -274,9 +274,7 @@ public class receiver {
 			}
 		}
 		
-		/*
-		 * Close connection
-		 */
+		/* Close connection */
 		receiverSocket.close();
 		
 		/*

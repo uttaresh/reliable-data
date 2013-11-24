@@ -30,6 +30,9 @@ public class sender {
 	
 	/**
 	 * Function to read file into byte[] array
+	 * 
+	 * Reference: I found this somewhere on StackOverflow, I can't find the link
+	 * tho... Sorry! :(
 	 */
 	public static byte[] readFile(File file) throws IOException {
         // Open file
@@ -156,6 +159,9 @@ public class sender {
 		System.out.print("Sending file..");
 	}
 	
+	/*
+	 * Process a received ACK. Update window and timer attributes
+	 */
 	static event_t updateACKs(TCPSegment receivedACK){		
 
 		if (receivedACK.ack_no == window_start){
@@ -184,6 +190,9 @@ public class sender {
 		}
 	}
 	
+	/*
+	 * Send all unsent packets in the new window
+	 */
 	static void transmitNew(){		
 		// Start timer if not already running
 		if (end_time<=System.currentTimeMillis()){
